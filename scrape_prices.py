@@ -9,10 +9,11 @@ import os
 import re
 import json
 import time
+import smtplib
+from email.mime.text import MIMEText
 import gspread
 from google.oauth2.service_account import Credentials
 from playwright.sync_api import sync_playwright
-import requests
 
 # ============================================================
 # الإعدادات - تُقرأ من GitHub Secrets (متغيرات بيئة)
@@ -20,8 +21,9 @@ import requests
 
 GOOGLE_CREDS_JSON = os.environ["GOOGLE_SERVICE_ACCOUNT_JSON"]  # محتوى ملف JSON كامل كنص
 SHEET_ID = os.environ["GOOGLE_SHEET_ID"]                       # معرف الشيت من رابطه
-CALLMEBOT_PHONE = os.environ["CALLMEBOT_PHONE"]                 # رقمك بصيغة دولية بدون +
-CALLMEBOT_APIKEY = os.environ["CALLMEBOT_APIKEY"]               # المفتاح اللي ترجعه CallMeBot بعد التفعيل
+EMAIL_SENDER = os.environ["EMAIL_SENDER"]                      # إيميل Gmail اللي راح يرسل منه الإشعار
+EMAIL_APP_PASSWORD = os.environ["EMAIL_APP_PASSWORD"]          # App Password (16 خانة) وليس كلمة مرور Gmail العادية
+EMAIL_RECEIVER = os.environ["EMAIL_RECEIVER"]                  # الإيميل اللي بدك توصلك فيه الإشعارات (ممكن يكون نفس المُرسِل)
 
 BASE_URL = "https://lavender-herbs.com/collections/"
 
@@ -170,34 +172,39 @@ def append_change_log(ws, changes):
 
 
 # ============================================================
-# 5. إشعار واتساب عبر CallMeBot
+# 5. إشعار إيميل عبر Gmail SMTP
 # ============================================================
 
-def send_whatsapp_notification(changes):
+def send_email_notification(changes):
     if not changes:
         return
 
-    lines = [f"🔔 تحديثات أسعار الموقع الشريك ({len(changes)}):"]
-    for c in changes[:15]:  # حد أقصى لطول الرسالة
+    lines = [f"تحديثات أسعار الموقع الشريك ({len(changes)}):", ""]
+    for c in changes[:30]:  # حد أقصى معقول لطول الإيميل
         if c["type"] == "new_product":
-            lines.append(f"🆕 {c['name']} ({c['category']}) - سعر جديد: {c['new_price']}")
+            lines.append(f"🆕 جديد: {c['name']} ({c['category']}) - السعر: {c['new_price']}")
         elif c["type"] == "price_change":
-            lines.append(f"💲 {c['name']} ({c['category']}): {c['old_price']} ← {c['new_price']}")
+            lines.append(f"💲 تغيّر سعر: {c['name']} ({c['category']}): {c['old_price']} ← {c['new_price']}")
         elif c["type"] == "removed_product":
-            lines.append(f"❌ {c['name']} ({c['category']}) لم يعد متوفرًا")
+            lines.append(f"❌ لم يعد متوفرًا: {c['name']} ({c['category']}) - آخر سعر: {c['old_price']}")
 
-    if len(changes) > 15:
-        lines.append(f"... و{len(changes) - 15} تغييرات إضافية، راجع الشيت للتفاصيل كاملة.")
+    if len(changes) > 30:
+        lines.append(f"\n... و{len(changes) - 30} تغييرات إضافية، راجع تبويب change_log بالشيت للتفاصيل كاملة.")
 
-    message = "\n".join(lines)
+    body = "\n".join(lines)
 
-    url = "https://api.callmebot.com/whatsapp.php"
-    params = {"phone": CALLMEBOT_PHONE, "text": message, "apikey": CALLMEBOT_APIKEY}
+    msg = MIMEText(body, "plain", "utf-8")
+    msg["Subject"] = f"🔔 تحديث أسعار الموقع الشريك - {len(changes)} تغيير"
+    msg["From"] = EMAIL_SENDER
+    msg["To"] = EMAIL_RECEIVER
+
     try:
-        r = requests.get(url, params=params, timeout=15)
-        print(f"إشعار واتساب: {r.status_code} - {r.text[:200]}")
+        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
+            server.login(EMAIL_SENDER, EMAIL_APP_PASSWORD)
+            server.sendmail(EMAIL_SENDER, [EMAIL_RECEIVER], msg.as_string())
+        print("تم إرسال إشعار الإيميل بنجاح.")
     except Exception as e:
-        print(f"[تحذير] فشل إرسال إشعار واتساب: {e}")
+        print(f"[تحذير] فشل إرسال إشعار الإيميل: {e}")
 
 
 # ============================================================
@@ -227,7 +234,7 @@ def main():
     update_current_prices(prices_ws, current_products)
     if changes:
         append_change_log(log_ws, changes)
-        send_whatsapp_notification(changes)
+        send_email_notification(changes)
     else:
         print("لا توجد تغييرات هذه المرة.")
 
